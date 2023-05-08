@@ -1,7 +1,7 @@
-// Copyright Kellan Mythen 2021. All rights Reserved.
+// Copyright Kellan Mythen 2023. All rights Reserved.
 
 
-#include "OpenAICallGPT.h"
+#include "OpenAICallCompletions.h"
 #include "OpenAIUtils.h"
 #include "Http.h"
 #include "Dom/JsonObject.h"
@@ -10,24 +10,24 @@
 #include "OpenAIParser.h"
 
 
-UOpenAICallGPT::UOpenAICallGPT()
+UOpenAICallCompletions::UOpenAICallCompletions()
 {
 }
 
-UOpenAICallGPT::~UOpenAICallGPT()
+UOpenAICallCompletions::~UOpenAICallCompletions()
 {
 }
 
-UOpenAICallGPT* UOpenAICallGPT::OpenAICallGPT3(EOAEngineType engineInput, FString promptInput, FGPT3Settings settingsInput)
+UOpenAICallCompletions* UOpenAICallCompletions::OpenAICallCompletions(EOACompletionsEngineType engineInput, FString promptInput, FCompletionSettings settingsInput)
 {
-	UOpenAICallGPT* BPNode = NewObject<UOpenAICallGPT>();
+	UOpenAICallCompletions* BPNode = NewObject<UOpenAICallCompletions>();
 	BPNode->engine = engineInput;
 	BPNode->prompt = promptInput;
 	BPNode->settings = settingsInput;
 	return BPNode;
 }
 
-void UOpenAICallGPT::Activate()
+void UOpenAICallCompletions::Activate()
 {
 	FString _apiKey;
 	if (UOpenAIUtils::getUseApiKeyFromEnvironmentVars())
@@ -46,9 +46,9 @@ void UOpenAICallGPT::Activate()
 	} else if (settings.bestOf < settings.numCompletions)
 	{
 		Finished.Broadcast({}, TEXT("bestOf must be greater than numCompletions"), {}, false);
-	} else if (settings.maxTokens <= 0 || ( engine != EOAEngineType::TEXT_DAVINCI_003 && settings.maxTokens >= 2048) || ( engine == EOAEngineType::TEXT_DAVINCI_003 && settings.maxTokens >= 4000))
+	} else if (settings.maxTokens <= 0 || ( engine != EOACompletionsEngineType::TEXT_DAVINCI_003 && settings.maxTokens >= 2048) || ( engine == EOACompletionsEngineType::TEXT_DAVINCI_003 && settings.maxTokens >= 4000))
 	{
-		Finished.Broadcast({}, TEXT("maxTokens must be within 0 and 2048. Up to 4096 if using davinci-3"), {}, false);
+		Finished.Broadcast({}, TEXT("maxTokens must be within 0 and 2048. Up to 4096 if using davinci-3."), {}, false);
 	} else if (settings.stopSequences.Num() > 4)
 	{
 		Finished.Broadcast({}, TEXT("You can only include up to 4 Stop Sequences"), {}, false);
@@ -62,31 +62,31 @@ void UOpenAICallGPT::Activate()
 	FString apiMethod;
 	switch (engine)
 	{
-	case EOAEngineType::DAVINCI:
+	case EOACompletionsEngineType::DAVINCI:
 			apiMethod = "davinci";
 	break;
-	case EOAEngineType::CURIE:
+	case EOACompletionsEngineType::CURIE:
 			apiMethod = "curie";
 	break;
-	case EOAEngineType::BABBAGE:
+	case EOACompletionsEngineType::BABBAGE:
 			apiMethod = "babbage";
 	break;
-	case EOAEngineType::ADA:
+	case EOACompletionsEngineType::ADA:
 			apiMethod = "ada";
 	break;
-	case EOAEngineType::TEXT_DAVINCI_002:
+	case EOACompletionsEngineType::TEXT_DAVINCI_002:
 		apiMethod = "text-davinci-002";
 	break;
-	case EOAEngineType::TEXT_CURIE_001:
+	case EOACompletionsEngineType::TEXT_CURIE_001:
 		apiMethod = "text-curie-001";
 	break;
-	case EOAEngineType::TEXT_BABBAGE_001:
+	case EOACompletionsEngineType::TEXT_BABBAGE_001:
 		apiMethod = "text-babbage-001";
 		break;
-	case EOAEngineType::TEXT_ADA_001:
+	case EOACompletionsEngineType::TEXT_ADA_001:
 		apiMethod = "text-ada-001";
 		break;
-	case EOAEngineType::TEXT_DAVINCI_003:
+	case EOACompletionsEngineType::TEXT_DAVINCI_003:
 		apiMethod = "text-davinci-003";
 		break;
 	}
@@ -139,7 +139,7 @@ void UOpenAICallGPT::Activate()
 
 	if (HttpRequest->ProcessRequest())
 	{
-		HttpRequest->OnProcessRequestComplete().BindUObject(this, &UOpenAICallGPT::OnResponse);
+		HttpRequest->OnProcessRequestComplete().BindUObject(this, &UOpenAICallCompletions::OnResponse);
 	}
 	else
 	{
@@ -147,7 +147,7 @@ void UOpenAICallGPT::Activate()
 	}
 }
 
-void UOpenAICallGPT::OnResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool WasSuccessful)
+void UOpenAICallCompletions::OnResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool WasSuccessful)
 {
 	if (!WasSuccessful)
 	{
@@ -162,28 +162,30 @@ void UOpenAICallGPT::OnResponse(FHttpRequestPtr Request, FHttpResponsePtr Respon
 
 	TSharedPtr<FJsonObject> responseObject;
 	TSharedRef<TJsonReader<>> reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+	
 	if (FJsonSerializer::Deserialize(reader, responseObject))
 	{
 		bool err = responseObject->HasField("error");
 
 		if (err)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("%s"), *Response->GetContentAsString());
-			Finished.Broadcast({}, TEXT("Api error"), {}, false);
+			FString ResponseString = Response->GetContentAsString();
+			UE_LOG(LogTemp, Warning, TEXT("%s"), *ResponseString);
+			Finished.Broadcast({}, TEXT("Api error: ") + ResponseString, {}, false);
 			return;
 		}
 
 		OpenAIParser parser(settings);
 		TArray<FCompletion> _out;
-		FCompletionInfo _info = parser.ParseCompletionInfo(*responseObject);
+		FCompletionInfo _info = parser.ParseGPTCompletionInfo(*responseObject);
 
 		auto CompletionsObject = responseObject->GetArrayField(TEXT("Choices"));
 		for (auto& elem : CompletionsObject)
 		{
-			_out.Add(parser.ParseCompletion(*elem->AsObject()));
+			_out.Add(parser.ParseCompletionsResponse(*elem->AsObject()));
 		}
 
-		Finished.Broadcast(_out, "",  _info, true);
+		Finished.Broadcast(_out, "", _info, true);
 	}
 }
 
